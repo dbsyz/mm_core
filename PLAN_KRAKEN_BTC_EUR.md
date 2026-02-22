@@ -2,6 +2,36 @@
 
 Scope: start with one exchange (Kraken) and one pair (`BTC/EUR`) and build a reusable framework for multi-exchange market making.
 
+## 24h Decision Gate (Run This First)
+
+Goal: decide objectively whether to proceed to 1-week capture.
+
+### How to run
+
+1) Collect for 24h:
+- `test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR --out mm_core\out\kraken_bbo_latency_24h.csv`
+
+2) Analyze with fixed operational thresholds:
+- `test_venv\Scripts\python.exe mm_core\analyze.py --file mm_core\out\kraken_bbo_latency_24h.csv --normal-max-ms 20 --degraded-max-ms 80`
+
+### Pass/Fail criteria
+
+Mandatory pass checks:
+- collector ran at least 23.5h without fatal exit
+- parseable samples >= 500,000
+- `p50 <= 15ms`
+- `p95 <= 100ms`
+- `p99 <= 400ms`
+- `unsafe_share (age > 80ms) <= 8%`
+
+Conditional pass checks:
+- no prolonged feed silence observed in logs (no gaps > 60s)
+- no repeated instability pattern (for example, frequent reconnect loops)
+
+Decision:
+- If all mandatory checks pass and no major conditional red flags: proceed to 1-week collection.
+- If any mandatory check fails: fix ingestion/infra issues first, then rerun 24h gate.
+
 ## Phase 0: Foundation (now)
 
 Goal: stable, measurable market-data capture.

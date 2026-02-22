@@ -84,3 +84,19 @@ Those three combined define whether your quoting engine is competitive.
 - runtime config template: `mm_core/configs/kraken_btc_eur.toml`
 
 Current collector stays as the production probe while the framework is expanded.
+
+## 7) 24h Go/No-Go Gate
+
+Collect:
+
+```powershell
+test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR --out mm_core\out\kraken_bbo_latency_24h.csv
+```
+
+Analyze:
+
+```powershell
+test_venv\Scripts\python.exe mm_core\analyze.py --file mm_core\out\kraken_bbo_latency_24h.csv --normal-max-ms 20 --degraded-max-ms 80
+```
+
+Use thresholds in `mm_core/PLAN_KRAKEN_BTC_EUR.md` to decide whether to move to 1-week collection.
