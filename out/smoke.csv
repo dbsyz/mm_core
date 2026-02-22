@@ -1,0 +1,2 @@
+capture_time_utc,recv_ts_ms,exchange_ts,exchange_ts_ms,symbol,bid,ask,bid_qty,ask_qty,raw_age_ms,adjusted_age_ms,e2e_since_sub_ms
+2026-02-22T14:15:47.553835+00:00,1771769747553.809,2026-02-22T14:15:46.039347Z,1771769746039.347,BTC/EUR,57417.7,57417.8,0.91686196,0.00299059,1514.462,3505.175,1176.930

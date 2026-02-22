@@ -1,0 +1,13 @@
+[run]
+exchange = "kraken"
+symbol = "BTC/EUR"
+ws_url = "wss://ws.kraken.com/v2"
+summary_every_seconds = 5.0
+max_seconds = 0
+
+[output]
+csv_path = "mm_core/out/kraken_bbo_latency.csv"
+
+[regimes]
+normal_max_ms = 20.0
+degraded_max_ms = 80.0

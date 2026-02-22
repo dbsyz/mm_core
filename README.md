@@ -1,0 +1,86 @@
+# Kraken BBO Latency Probe
+
+Purpose: measure how old Kraken BTC/EUR top-of-book data is when it reaches your machine.
+
+This project subscribes to Kraken Spot WebSocket v2 `ticker` with `event_trigger=bbo` and records:
+- exchange timestamp from each BBO update
+- local receive timestamp
+- `raw_age_ms = recv_ts_ms - exchange_ts_ms`
+- `adjusted_age_ms` using NTP-style clock offset estimate from subscribe ack (`time_in/time_out`)
+
+## 1) Setup
+
+From `c:\Users\syzdy\python`:
+
+```powershell
+test_venv\Scripts\python.exe -m pip install -r mm_core\requirements.txt
+```
+
+## 2) Run Live Collector
+
+```powershell
+test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR
+```
+
+It prints rolling stats every 5s by default:
+- message rate
+- `age_ms` p50/p95/p99/mean/max
+
+Raw samples are stored at:
+- `mm_core\out\kraken_bbo_latency.csv`
+
+Short smoke test:
+
+```powershell
+test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR --max-seconds 10 --summary-every 2
+```
+
+Stop with `Ctrl+C`.
+
+## 3) Analyze a Session
+
+```powershell
+test_venv\Scripts\python.exe mm_core\analyze.py --file mm_core\out\kraken_bbo_latency.csv
+```
+
+Define explicit regimes:
+
+```powershell
+test_venv\Scripts\python.exe mm_core\analyze.py --file mm_core\out\kraken_bbo_latency.csv --normal-max-ms 20 --degraded-max-ms 80
+```
+
+If thresholds are not provided, analyzer defaults to:
+- `normal <= p95`
+- `degraded <= p99`
+- `unsafe > p99`
+
+## 4) How to interpret for market making
+
+- `p50`: typical adjusted data staleness you trade on.
+- `p95/p99`: tail risk; this drives adverse selection during volatility.
+- `max`: useful for incident detection, not for normal quoting.
+
+Practical quoting guardrails:
+- widen or reduce size when `p95` breaches threshold
+- halt aggressive quoting when `p99` spikes persistently
+
+Note: collector now enforces CSV header consistency. If schema changed, use a new `--out` filename.
+
+## 5) Next build step (recommended)
+
+Add an order-ack latency probe (REST or WS trading path) so you can track:
+- market data latency
+- decision latency
+- order round-trip latency
+
+Those three combined define whether your quoting engine is competitive.
+
+## 6) POC Framework Files
+
+- execution plan: `mm_core/PLAN_KRAKEN_BTC_EUR.md`
+- reusable models: `mm_core/framework/models.py`
+- exchange adapter interface: `mm_core/framework/adapters/base.py`
+- Kraken adapter: `mm_core/framework/adapters/kraken.py`
+- runtime config template: `mm_core/configs/kraken_btc_eur.toml`
+
+Current collector stays as the production probe while the framework is expanded.
