@@ -120,6 +120,11 @@ def normalize_symbol(symbol: str) -> str:
     return symbol.strip().upper()
 
 
+def default_output_path() -> Path:
+    stamp = datetime.now(tz=UTC).strftime("%Y%m%d_%H%M%S")
+    return Path(f"mm_core/out/kraken_bbo_latency_{stamp}.csv")
+
+
 def ensure_csv(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
@@ -173,6 +178,7 @@ async def run_collector(
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _stop_handler)
 
+    print(f"[{utc_iso_now()}] starting collector out={out_csv}")
     print(f"[{utc_iso_now()}] connecting ws={ws_url} symbol={symbol}")
     async with websockets.connect(ws_url, ping_interval=15, ping_timeout=15) as ws:
         payload = subscribe_payload(symbol)
@@ -273,8 +279,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--out",
-        default="mm_core/out/kraken_bbo_latency.csv",
-        help="Output CSV path for raw samples.",
+        default=None,
+        help=(
+            "Output CSV path for raw samples. If omitted, a timestamped file is created "
+            "under mm_core/out/."
+        ),
     )
     parser.add_argument(
         "--summary-every",
@@ -298,7 +307,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    out_csv = Path(args.out)
+    out_csv = Path(args.out) if args.out else default_output_path()
     try:
         asyncio.run(
             run_collector(

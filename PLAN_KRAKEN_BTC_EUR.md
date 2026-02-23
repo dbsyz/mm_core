@@ -9,10 +9,13 @@ Goal: decide objectively whether to proceed to 1-week capture.
 ### How to run
 
 1) Collect for 24h:
-- `test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR --out mm_core\out\kraken_bbo_latency_24h.csv`
+- `test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR --out mm_core\out\kraken_bbo_latency_24h.csv --max-seconds 86400`
 
 2) Analyze with fixed operational thresholds:
 - `test_venv\Scripts\python.exe mm_core\analyze.py --file mm_core\out\kraken_bbo_latency_24h.csv --normal-max-ms 20 --degraded-max-ms 80`
+
+3) Run routine data QA:
+- `test_venv\Scripts\python.exe mm_core\data_quality_check.py --file mm_core\out\kraken_bbo_latency_24h.csv --strict`
 
 ### Pass/Fail criteria
 
@@ -23,6 +26,7 @@ Mandatory pass checks:
 - `p95 <= 100ms`
 - `p99 <= 400ms`
 - `unsafe_share (age > 80ms) <= 8%`
+- routine data QA status is `PASS` (strict mode)
 
 Conditional pass checks:
 - no prolonged feed silence observed in logs (no gaps > 60s)
