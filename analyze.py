@@ -44,7 +44,8 @@ def parse_row(header: list[str], row: list[str], prefer_adjusted: bool) -> Parse
     e2e = None
     if "e2e_since_sub_ms" in header:
         e2e = parse_float_cell(row, header.index("e2e_since_sub_ms"))
-    elif len(row) >= 11:
+    elif len(row) >= 12:
+        # Mixed legacy/new rows: e2e is only present in the new 12-column shape.
         e2e = parse_float_cell(row, len(row) - 1)
 
     # New schema, correct header.

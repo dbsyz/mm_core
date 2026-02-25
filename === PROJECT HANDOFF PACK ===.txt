@@ -1,0 +1,145 @@
+=== PROJECT HANDOFF PACK ===
+Last updated: 2026-02-25 (UTC)
+Project root: c:\Users\syzdy\python\mm_core
+
+1) ONE-LINE GOAL
+- Build a reusable market-making data foundation starting with Kraken BTC/EUR live L1 BBO capture, latency analytics, and strict data QA gates.
+
+2) CURRENT STATUS (WORKING / NOT YET BUILT)
+- Working now:
+- `mm_core/collector.py` captures Kraken WS v2 ticker BBO, writes CSV, prints rolling latency summaries.
+- Collector now has reconnect/backoff handling for transient websocket/network/runtime errors.
+- Collector supports `--max-seconds` as total session duration across reconnects.
+- Clock-offset correction from subscribe ack (`time_in/time_out`) is applied to produce `adjusted_age_ms`.
+- `mm_core/analyze.py` computes latency stats + regime shares and defaults to latest contiguous run.
+- Analyzer legacy parsing bug fixed: old 11-column rows no longer mis-infer `e2e_since_sub_ms`.
+- `mm_core/data_quality_check.py` runs integrity + QA checks and supports strict non-zero exit.
+- New automated tests added under `mm_core/tests/` and passing locally.
+- Not yet built:
+- Fair value baseline script (mid/microprice + 1s directional evaluation).
+- Trades/L2 ingestion (still L1 BBO-only stack).
+- Adapter-driven runtime migration (framework exists, collector still script-centric).
+
+3) SCOPE
+- In-scope now:
+- Kraken only.
+- Symbol `BTC/EUR` only.
+- L1 BBO collection, offline latency analysis, strict QA.
+- Out-of-scope now:
+- Multi-exchange aggregation.
+- L2/L3/trades production ingestion.
+- Live quoting engine, routing, execution, and PnL backtesting stack.
+
+4) CONSTRAINTS
+- Platform: Windows + PowerShell + local venv `test_venv`, Python 3.14.
+- Cost: Kraken public WS only, no paid infra.
+- Security: no secrets required for current data path.
+- Data hygiene rule: use unique output file per run (or collector default timestamped output).
+
+5) TECH STACK
+- Python 3.14.3
+- `websockets==15.0.1`
+- Standard library: `asyncio`, `csv`, `argparse`, `dataclasses`, `pathlib`
+
+6) ARCHITECTURE OVERVIEW
+- `collector.py`: live ingestion and raw CSV output with latency fields.
+- `analyze.py`: offline run segmentation, latency percentiles, regime shares.
+- `data_quality_check.py`: integrity diagnostics + strict QA gate.
+- `framework/models.py`: canonical `BBOEvent`.
+- `framework/adapters/base.py`: `ExchangeAdapter` protocol.
+- `framework/adapters/kraken.py`: Kraken BBO parsing adapter.
+
+7) CSV SCHEMA (DO NOT CHANGE WITHOUT VERSIONING)
+- Header:
+- `capture_time_utc, recv_ts_ms, exchange_ts, exchange_ts_ms, symbol, bid, ask, bid_qty, ask_qty, raw_age_ms, adjusted_age_ms, e2e_since_sub_ms`
+- Semantics:
+- `raw_age_ms = recv_ts_ms - exchange_ts_ms`
+- `adjusted_age_ms = raw_age_ms + clock_offset_ms`
+- `e2e_since_sub_ms` is used to split contiguous runs after reconnect/restart.
+
+8) CLI CONTRACTS
+- Collect:
+- `test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR [--out <csv>] [--max-seconds N] [--summary-every S]`
+- Analyze:
+- `test_venv\Scripts\python.exe mm_core\analyze.py --file <csv> [--normal-max-ms X --degraded-max-ms Y] [--all-runs]`
+- QA:
+- `test_venv\Scripts\python.exe mm_core\data_quality_check.py --file <csv> [--strict] [--all-runs]`
+
+9) IMPORTANT PATHS
+- `mm_core/collector.py`
+- `mm_core/analyze.py`
+- `mm_core/data_quality_check.py`
+- `mm_core/tests/test_analyze.py`
+- `mm_core/tests/test_collector.py`
+- `mm_core/tests/test_data_quality_check.py`
+- `mm_core/PLAN_KRAKEN_BTC_EUR.md`
+- `mm_core/README.md`
+- Legacy duplicate (non-canonical): `c:\Users\syzdy\python\kraken_latency`
+
+10) TESTING STATUS
+- Static compile check:
+- `test_venv\Scripts\python.exe -m py_compile mm_core\collector.py mm_core\analyze.py mm_core\data_quality_check.py`
+- Unit tests:
+- `test_venv\Scripts\python.exe -m unittest discover -s mm_core\tests -p "test_*.py" -v`
+- Current local result:
+- 6 tests passed on 2026-02-25.
+- Coverage gaps:
+- No integration test harness with replayed websocket fixtures.
+- No long-run deterministic test for clock-offset drift behavior.
+
+11) KNOWN RISKS / OPEN ISSUES
+- 24h sample `mm_core\out\kraken_bbo_latency_24h_2026-02-22.csv` is poor quality:
+- analyzer showed p50 about 1306 ms and unsafe share about 98.64%.
+- strict QA failed with backward timestamp share about 5.90% and max backward jump about 19606 ms.
+- This indicates either venue timestamp instability in that run, or offset/data path issues.
+- Reconnect hardening is in place, but periodic offset refresh / drift guard is still not implemented.
+- Repo currently tracks `mm_core/__pycache__/*.pyc`, which creates noisy diffs.
+
+12) DO-NOT-CHANGE LIST
+- Keep canonical project root as `mm_core/`.
+- Keep collector CSV header/order stable unless explicit schema versioning is introduced.
+- Keep analyzer default behavior as latest contiguous run.
+- Keep 24h gate thresholds/process in `PLAN_KRAKEN_BTC_EUR.md` unless intentionally revised.
+
+13) NEXT 3 TASKS (ORDERED)
+- 1. Implement periodic clock-offset refresh / drift guard in collector.
+- Acceptance:
+- offset is recomputed at controlled intervals or on reconnect and metrics are monitored for drift.
+- 2. Add fair baseline script on BBO data (`mid`, `microprice`, 1s directional evaluation).
+- Acceptance:
+- reproducible script output with baseline comparison from CSV input.
+- 3. Re-run clean 24h collection and gate using strict QA + analyzer fixed thresholds (20/80).
+- Acceptance:
+- >=23.5h runtime, strict QA pass, and latency stats within plan thresholds.
+
+14) QUICK RUNBOOK
+- Install deps:
+- `test_venv\Scripts\python.exe -m pip install -r mm_core\requirements.txt`
+- 15m smoke capture:
+- `test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR --out mm_core\out\sanity_fresh.csv --max-seconds 900`
+- Analyze:
+- `test_venv\Scripts\python.exe mm_core\analyze.py --file mm_core\out\sanity_fresh.csv --normal-max-ms 20 --degraded-max-ms 80`
+- Strict QA:
+- `test_venv\Scripts\python.exe mm_core\data_quality_check.py --file mm_core\out\sanity_fresh.csv --strict`
+
+=== NEXT CHAT BOOTSTRAP PROMPT ===
+Continue the `mm_core` project at `c:\Users\syzdy\python\mm_core`.
+
+Current status:
+- Collector/analyzer/QA scripts are functional.
+- Collector includes reconnect/backoff.
+- Analyzer legacy parsing bug is fixed.
+- Unit tests exist in `mm_core/tests` and pass (6 tests).
+- Main unresolved risk is long-run latency quality and potential clock-offset drift.
+
+Immediate priorities:
+1) Implement periodic offset refresh/drift guard in `collector.py`.
+2) Add a small fair baseline script (mid + microprice + 1s directional check).
+3) Update README with baseline command.
+4) Re-run clean 24h capture and apply strict QA gate.
+
+Constraints:
+- Keep `mm_core/` as canonical root.
+- Do not modify legacy `kraken_latency/` unless explicitly requested.
+- Do not change CSV schema without explicit versioning.
+=== END ===

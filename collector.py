@@ -167,9 +167,8 @@ async def run_collector(
     ensure_csv(out_csv)
     stats = RollingStats()
     stop_event = asyncio.Event()
-    sub_send_ms: float | None = None
-    clock_offset_ms = 0.0
-    clock_offset_ready = False
+    session_start_ms = epoch_ms()
+    reconnect_attempt = 0
 
     def _stop_handler(*_: Any) -> None:
         stop_event.set()
@@ -179,93 +178,131 @@ async def run_collector(
         signal.signal(signal.SIGTERM, _stop_handler)
 
     print(f"[{utc_iso_now()}] starting collector out={out_csv}")
-    print(f"[{utc_iso_now()}] connecting ws={ws_url} symbol={symbol}")
-    async with websockets.connect(ws_url, ping_interval=15, ping_timeout=15) as ws:
-        payload = subscribe_payload(symbol)
-        sub_send_ms = epoch_ms()
-        await ws.send(json.dumps(payload))
-        print(f"[{utc_iso_now()}] subscribed payload={payload}")
+    next_summary_ts = time.monotonic() + summary_every_s
+    with out_csv.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        while not stop_event.is_set():
+            if max_seconds is not None and (epoch_ms() - session_start_ms) / 1000.0 >= max_seconds:
+                stop_event.set()
+                break
 
-        next_summary_ts = time.monotonic() + summary_every_s
-        with out_csv.open("a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            while not stop_event.is_set():
-                if max_seconds is not None and (epoch_ms() - sub_send_ms) / 1000.0 >= max_seconds:
-                    stop_event.set()
+            clock_offset_ms = 0.0
+            clock_offset_ready = False
+            sub_send_ms = 0.0
+            try:
+                print(f"[{utc_iso_now()}] connecting ws={ws_url} symbol={symbol}")
+                async with websockets.connect(ws_url, ping_interval=15, ping_timeout=15) as ws:
+                    payload = subscribe_payload(symbol)
+                    sub_send_ms = epoch_ms()
+                    await ws.send(json.dumps(payload))
+                    print(f"[{utc_iso_now()}] subscribed payload={payload}")
+                    reconnect_attempt = 0
+
+                    while not stop_event.is_set():
+                        if (
+                            max_seconds is not None
+                            and (epoch_ms() - session_start_ms) / 1000.0 >= max_seconds
+                        ):
+                            stop_event.set()
+                            break
+
+                        raw = await asyncio.wait_for(ws.recv(), timeout=30)
+                        recv_ts_ms = epoch_ms()
+                        msg = json.loads(raw)
+
+                        if msg.get("method") == "subscribe":
+                            if not msg.get("success", False):
+                                raise RuntimeError(f"subscription failed: {msg}")
+                            server_in_ms = parse_exchange_ts_ms(msg.get("time_in"))
+                            server_out_ms = parse_exchange_ts_ms(msg.get("time_out"))
+                            if server_in_ms is not None and server_out_ms is not None:
+                                local_recv_ms = recv_ts_ms
+                                t0 = sub_send_ms
+                                t1 = server_in_ms
+                                t2 = server_out_ms
+                                t3 = local_recv_ms
+                                # NTP style estimate: server_clock - local_clock.
+                                clock_offset_ms = ((t1 - t0) + (t2 - t3)) / 2.0
+                                clock_offset_ready = True
+                                print(
+                                    f"[{utc_iso_now()}] clock_offset_ms={clock_offset_ms:.3f} "
+                                    f"(server-local)"
+                                )
+                            continue
+
+                        ticker = parse_ticker_event(msg)
+                        if ticker is None:
+                            continue
+
+                        exchange_ts = ticker.get("timestamp")
+                        exchange_ts_ms = parse_exchange_ts_ms(exchange_ts)
+                        if exchange_ts_ms is None:
+                            continue
+
+                        raw_age_ms = recv_ts_ms - exchange_ts_ms
+                        adjusted_age_ms = (
+                            raw_age_ms + clock_offset_ms if clock_offset_ready else raw_age_ms
+                        )
+                        sample = LatencySample(
+                            exchange_ts_ms=exchange_ts_ms,
+                            recv_ts_ms=recv_ts_ms,
+                            raw_age_ms=raw_age_ms,
+                            adjusted_age_ms=adjusted_age_ms,
+                            e2e_since_sub_ms=recv_ts_ms - sub_send_ms,
+                        )
+                        stats.add(sample)
+
+                        writer.writerow(
+                            [
+                                utc_iso_now(),
+                                f"{recv_ts_ms:.3f}",
+                                exchange_ts,
+                                f"{exchange_ts_ms:.3f}",
+                                ticker.get("symbol", symbol),
+                                ticker.get("bid"),
+                                ticker.get("ask"),
+                                ticker.get("bid_qty"),
+                                ticker.get("ask_qty"),
+                                f"{raw_age_ms:.3f}",
+                                f"{adjusted_age_ms:.3f}",
+                                f"{sample.e2e_since_sub_ms:.3f}",
+                            ]
+                        )
+
+                        if time.monotonic() >= next_summary_ts:
+                            s = stats.summary()
+                            print(
+                                (
+                                    f"[{utc_iso_now()}] n={int(s['count_window'])} "
+                                    f"rate={s['msg_rate_per_s']:.2f}/s "
+                                    f"age_ms p50={s['age_ms_p50']:.2f} "
+                                    f"p95={s['age_ms_p95']:.2f} p99={s['age_ms_p99']:.2f} "
+                                    f"mean={s['age_ms_mean']:.2f} max={s['age_ms_max']:.2f}"
+                                )
+                            )
+                            next_summary_ts = time.monotonic() + summary_every_s
+            except RuntimeError:
+                raise
+            except (
+                TimeoutError,
+                OSError,
+                websockets.exceptions.ConnectionClosed,
+                websockets.exceptions.WebSocketException,
+                json.JSONDecodeError,
+            ) as exc:
+                if stop_event.is_set():
                     break
-                raw = await asyncio.wait_for(ws.recv(), timeout=30)
-                recv_ts_ms = epoch_ms()
-                msg = json.loads(raw)
-
-                if msg.get("method") == "subscribe":
-                    if not msg.get("success", False):
-                        raise RuntimeError(f"subscription failed: {msg}")
-                    server_in_ms = parse_exchange_ts_ms(msg.get("time_in"))
-                    server_out_ms = parse_exchange_ts_ms(msg.get("time_out"))
-                    if server_in_ms is not None and server_out_ms is not None:
-                        local_recv_ms = recv_ts_ms
-                        t0 = sub_send_ms
-                        t1 = server_in_ms
-                        t2 = server_out_ms
-                        t3 = local_recv_ms
-                        # NTP style estimate: server_clock - local_clock.
-                        clock_offset_ms = ((t1 - t0) + (t2 - t3)) / 2.0
-                        clock_offset_ready = True
-                        print(
-                            f"[{utc_iso_now()}] clock_offset_ms={clock_offset_ms:.3f} "
-                            f"(server-local)"
-                        )
-                    continue
-
-                ticker = parse_ticker_event(msg)
-                if ticker is None:
-                    continue
-
-                exchange_ts = ticker.get("timestamp")
-                exchange_ts_ms = parse_exchange_ts_ms(exchange_ts)
-                if exchange_ts_ms is None:
-                    continue
-
-                raw_age_ms = recv_ts_ms - exchange_ts_ms
-                adjusted_age_ms = raw_age_ms + clock_offset_ms if clock_offset_ready else raw_age_ms
-                sample = LatencySample(
-                    exchange_ts_ms=exchange_ts_ms,
-                    recv_ts_ms=recv_ts_ms,
-                    raw_age_ms=raw_age_ms,
-                    adjusted_age_ms=adjusted_age_ms,
-                    e2e_since_sub_ms=recv_ts_ms - sub_send_ms,
+                reconnect_attempt += 1
+                delay_s = min(30.0, 2.0 ** min(reconnect_attempt, 5))
+                print(
+                    f"[{utc_iso_now()}] warning: ws loop error={exc!r}; "
+                    f"reconnect_attempt={reconnect_attempt} sleep={delay_s:.1f}s"
                 )
-                stats.add(sample)
-
-                writer.writerow(
-                    [
-                        utc_iso_now(),
-                        f"{recv_ts_ms:.3f}",
-                        exchange_ts,
-                        f"{exchange_ts_ms:.3f}",
-                        ticker.get("symbol", symbol),
-                        ticker.get("bid"),
-                        ticker.get("ask"),
-                        ticker.get("bid_qty"),
-                        ticker.get("ask_qty"),
-                        f"{raw_age_ms:.3f}",
-                        f"{adjusted_age_ms:.3f}",
-                        f"{sample.e2e_since_sub_ms:.3f}",
-                    ]
-                )
-
-                if time.monotonic() >= next_summary_ts:
-                    s = stats.summary()
-                    print(
-                        (
-                            f"[{utc_iso_now()}] n={int(s['count_window'])} "
-                            f"rate={s['msg_rate_per_s']:.2f}/s "
-                            f"age_ms p50={s['age_ms_p50']:.2f} "
-                            f"p95={s['age_ms_p95']:.2f} p99={s['age_ms_p99']:.2f} "
-                            f"mean={s['age_ms_mean']:.2f} max={s['age_ms_max']:.2f}"
-                        )
-                    )
-                    next_summary_ts = time.monotonic() + summary_every_s
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=delay_s)
+                except TimeoutError:
+                    pass
+                continue
 
     print(f"[{utc_iso_now()}] stopped cleanly")
 
