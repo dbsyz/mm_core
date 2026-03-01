@@ -8,18 +8,22 @@ Read first:
 
 Current facts:
 - Collector/analyzer/QA are operational.
-- Collector has reconnect/backoff.
+- Collector has reconnect/backoff plus periodic offset refresh guardrails.
 - Analyzer legacy parsing bug is fixed.
-- Unit tests exist and pass (`python -m unittest discover -s mm_core\tests -p "test_*.py" -v`).
-- Main unresolved risk is long-run latency quality and potential clock-offset drift.
+- Unit tests exist and pass (9 tests).
+- Visualization scripts exist:
+  - `mm_core/visualize_bbo.py`
+  - `mm_core/visualize_bbo_interactive.py`
+- Main unresolved risk is long-run contiguous run quality validation.
 
 Primary tasks:
-1. Implement periodic clock-offset refresh/drift guard in `collector.py`.
-2. Add lightweight fair baseline script (`mid`, `microprice`, 1s directional check).
-3. Update README with baseline command.
-4. Re-run clean 24h collection and strict QA gate.
+1. Validate Step 1 on fresh unique-file captures (1h then 24h), strict QA gated.
+2. Build historical store batch pipeline (partitioned Parquet + manifest).
+3. Add lightweight fair baseline script (`mid`, `microprice`, 1s directional check).
+4. Update README with baseline + visualization commands.
 
 Constraints:
 - Keep `mm_core/` as canonical project root.
 - Do not touch `kraken_latency/` unless explicitly requested.
+- Use new output file per run (no append) for QA/backtesting inputs.
 - Do not break collector CSV schema without explicit schema versioning.

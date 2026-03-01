@@ -46,3 +46,75 @@
 ### Notes for Next Chat
 - Use `mm_core/=== PROJECT HANDOFF PACK ===.txt` as the canonical start point.
 - Keep `mm_core` as canonical root and avoid touching `kraken_latency` unless asked.
+
+## 2026-03-01
+
+### Summary
+- Added execution plan document for historical data foundation and backtesting readiness:
+  - `mm_core/PLAN_HISTORICAL_DATA_BACKTEST.md`
+
+### Why
+- Consolidates the agreed strategy into a handover-ready, phase-based roadmap with concrete acceptance criteria.
+- Reduces ambiguity for next chats by defining implementation order and quality gates.
+
+### Priority
+- Phase 1 (ingestion reliability hardening) and Phase 2 (canonical historical store) are the immediate build targets.
+
+## 2026-03-01 (Step 1 execution)
+
+### Summary
+- Implemented Phase 1 starter in collector:
+  - periodic clock-offset refresh by controlled reconnect,
+  - offset drift/outlier guardrails,
+  - new runtime knobs for offset policy.
+
+### Code Changes
+- `mm_core/collector.py`
+  - Added `validate_clock_offset(...)` to reject invalid offset estimates.
+  - Added periodic refresh control:
+    - `--offset-refresh-seconds` (default 900, 0 disables).
+  - Added guard parameters:
+    - `--max-abs-clock-offset-ms` (default 2000),
+    - `--max-offset-jump-ms` (default 500).
+
+### Test and Runtime Verification
+- Compile checks passed:
+  - `python -m py_compile` on collector/analyzer/qa/visualization scripts.
+- Unit tests passed:
+  - `python -m unittest discover -s mm_core\tests -p "test_*.py" -v`
+  - 9 tests passing (added collector offset validation tests).
+- Live smoke passed:
+  - `collector.py --max-seconds 8` produced valid output.
+  - `analyze.py` + `data_quality_check.py --strict` passed on smoke output.
+
+## 2026-03-01 (1h validation + visualization)
+
+### Summary
+- Ran a 1h capture validation and post-run analysis/strict QA.
+- Generated interactive chart for latest run.
+- Standardized operating policy: create a new output file on each run (no append for QA/backtest inputs).
+
+### Runtime Results
+- File analyzed:
+  - `mm_core/out/kraken_bbo_1h_test.csv`
+- `analyze.py` (latest run segment):
+  - `runs_detected=4`, `samples=46165`
+  - `p50=15.497ms`, `p95=54.160ms`, `p99=114.128ms`, `unsafe_share=1.78%`
+- `data_quality_check.py --strict`:
+  - `qa_status=PASS`
+  - backward timestamp share `3.35%` (below strict threshold)
+- Note:
+  - run segmentation indicates file reuse/appending; latest run duration ~883s.
+  - use unique output file per run going forward.
+
+### Visualization
+- Added/validated scripts:
+  - `mm_core/visualize_bbo.py` (static PNG outputs)
+  - `mm_core/visualize_bbo_interactive.py` (interactive HTML with toggles/zoom)
+- Latest interactive output:
+  - `mm_core/out/plots/kraken_bbo_1h_test_2026-03-01_interactive.html`
+
+### Interpretation Snapshot
+- The captured hour showed strong selloff conditions:
+  - mid change about `-1.94%`, range about `1205` points.
+  - spread tails widened (`p95` and `max` elevated).

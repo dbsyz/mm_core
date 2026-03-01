@@ -100,7 +100,7 @@ class RollingStats:
             "age_ms_p50": pct(ages, 0.50),
             "age_ms_p95": pct(ages, 0.95),
             "age_ms_p99": pct(ages, 0.99),
-                "age_ms_max": max(ages) if ages else 0.0,
+            "age_ms_max": max(ages) if ages else 0.0,
         }
 
 
@@ -156,12 +156,30 @@ def parse_ticker_event(message: dict[str, Any]) -> dict[str, Any] | None:
     return row
 
 
+def validate_clock_offset(
+    candidate_offset_ms: float,
+    last_good_offset_ms: float | None,
+    max_abs_clock_offset_ms: float,
+    max_offset_jump_ms: float,
+) -> tuple[float | None, str]:
+    if abs(candidate_offset_ms) > max_abs_clock_offset_ms:
+        return None, "rejected_abs"
+    if last_good_offset_ms is not None:
+        jump = abs(candidate_offset_ms - last_good_offset_ms)
+        if jump > max_offset_jump_ms:
+            return None, "rejected_jump"
+    return candidate_offset_ms, "accepted"
+
+
 async def run_collector(
     symbol: str,
     out_csv: Path,
     summary_every_s: float,
     ws_url: str,
     max_seconds: float | None,
+    offset_refresh_seconds: float,
+    max_abs_clock_offset_ms: float,
+    max_offset_jump_ms: float,
 ) -> None:
     symbol = normalize_symbol(symbol)
     ensure_csv(out_csv)
@@ -169,6 +187,7 @@ async def run_collector(
     stop_event = asyncio.Event()
     session_start_ms = epoch_ms()
     reconnect_attempt = 0
+    last_good_offset_ms: float | None = None
 
     def _stop_handler(*_: Any) -> None:
         stop_event.set()
@@ -188,10 +207,12 @@ async def run_collector(
 
             clock_offset_ms = 0.0
             clock_offset_ready = False
+            clock_offset_set_ms: float | None = None
             sub_send_ms = 0.0
             try:
                 print(f"[{utc_iso_now()}] connecting ws={ws_url} symbol={symbol}")
                 async with websockets.connect(ws_url, ping_interval=15, ping_timeout=15) as ws:
+                    connection_open_ms = epoch_ms()
                     payload = subscribe_payload(symbol)
                     sub_send_ms = epoch_ms()
                     await ws.send(json.dumps(payload))
@@ -204,6 +225,28 @@ async def run_collector(
                             and (epoch_ms() - session_start_ms) / 1000.0 >= max_seconds
                         ):
                             stop_event.set()
+                            break
+
+                        if (
+                            offset_refresh_seconds > 0.0
+                            and (
+                                (
+                                    clock_offset_ready
+                                    and clock_offset_set_ms is not None
+                                    and (epoch_ms() - clock_offset_set_ms) / 1000.0
+                                    >= offset_refresh_seconds
+                                )
+                                or (
+                                    not clock_offset_ready
+                                    and (epoch_ms() - connection_open_ms) / 1000.0
+                                    >= offset_refresh_seconds
+                                )
+                            )
+                        ):
+                            print(
+                                f"[{utc_iso_now()}] refreshing clock offset after "
+                                f"{offset_refresh_seconds:.0f}s via reconnect"
+                            )
                             break
 
                         raw = await asyncio.wait_for(ws.recv(), timeout=30)
@@ -222,12 +265,38 @@ async def run_collector(
                                 t2 = server_out_ms
                                 t3 = local_recv_ms
                                 # NTP style estimate: server_clock - local_clock.
-                                clock_offset_ms = ((t1 - t0) + (t2 - t3)) / 2.0
-                                clock_offset_ready = True
-                                print(
-                                    f"[{utc_iso_now()}] clock_offset_ms={clock_offset_ms:.3f} "
-                                    f"(server-local)"
+                                candidate_offset_ms = ((t1 - t0) + (t2 - t3)) / 2.0
+                                accepted, reason = validate_clock_offset(
+                                    candidate_offset_ms=candidate_offset_ms,
+                                    last_good_offset_ms=last_good_offset_ms,
+                                    max_abs_clock_offset_ms=max_abs_clock_offset_ms,
+                                    max_offset_jump_ms=max_offset_jump_ms,
                                 )
+                                if accepted is None:
+                                    if last_good_offset_ms is not None:
+                                        clock_offset_ms = last_good_offset_ms
+                                        clock_offset_ready = True
+                                        clock_offset_set_ms = recv_ts_ms
+                                        print(
+                                            f"[{utc_iso_now()}] warning: clock_offset candidate="
+                                            f"{candidate_offset_ms:.3f} rejected ({reason}); "
+                                            f"reusing last_good={last_good_offset_ms:.3f}"
+                                        )
+                                    else:
+                                        print(
+                                            f"[{utc_iso_now()}] warning: clock_offset candidate="
+                                            f"{candidate_offset_ms:.3f} rejected ({reason}); "
+                                            "using raw_age_ms until a valid offset is available"
+                                        )
+                                else:
+                                    clock_offset_ms = accepted
+                                    clock_offset_ready = True
+                                    clock_offset_set_ms = recv_ts_ms
+                                    last_good_offset_ms = accepted
+                                    print(
+                                        f"[{utc_iso_now()}] clock_offset_ms={clock_offset_ms:.3f} "
+                                        f"(server-local, {reason})"
+                                    )
                             continue
 
                         ticker = parse_ticker_event(msg)
@@ -339,6 +408,27 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=None,
         help="Optional max runtime in seconds (useful for smoke tests).",
     )
+    parser.add_argument(
+        "--offset-refresh-seconds",
+        type=float,
+        default=900.0,
+        help=(
+            "Re-estimate clock offset by reconnecting at this interval in seconds "
+            "(default: 900, set 0 to disable)."
+        ),
+    )
+    parser.add_argument(
+        "--max-abs-clock-offset-ms",
+        type=float,
+        default=2_000.0,
+        help="Reject new clock offset estimates beyond this absolute bound (default: 2000).",
+    )
+    parser.add_argument(
+        "--max-offset-jump-ms",
+        type=float,
+        default=500.0,
+        help="Reject new clock offsets that jump this much vs last accepted (default: 500).",
+    )
     return parser.parse_args(argv)
 
 
@@ -353,6 +443,9 @@ def main(argv: list[str]) -> int:
                 summary_every_s=args.summary_every,
                 ws_url=args.ws_url,
                 max_seconds=args.max_seconds,
+                offset_refresh_seconds=args.offset_refresh_seconds,
+                max_abs_clock_offset_ms=args.max_abs_clock_offset_ms,
+                max_offset_jump_ms=args.max_offset_jump_ms,
             )
         )
     except KeyboardInterrupt:

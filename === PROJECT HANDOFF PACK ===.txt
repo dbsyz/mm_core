@@ -1,5 +1,5 @@
 === PROJECT HANDOFF PACK ===
-Last updated: 2026-02-25 (UTC)
+Last updated: 2026-03-01 (UTC)
 Project root: c:\Users\syzdy\python\mm_core
 
 1) ONE-LINE GOAL
@@ -10,11 +10,16 @@ Project root: c:\Users\syzdy\python\mm_core
 - `mm_core/collector.py` captures Kraken WS v2 ticker BBO, writes CSV, prints rolling latency summaries.
 - Collector now has reconnect/backoff handling for transient websocket/network/runtime errors.
 - Collector supports `--max-seconds` as total session duration across reconnects.
+- Collector now has periodic clock-offset refresh/drift guard controls:
+- `--offset-refresh-seconds`, `--max-abs-clock-offset-ms`, `--max-offset-jump-ms`.
 - Clock-offset correction from subscribe ack (`time_in/time_out`) is applied to produce `adjusted_age_ms`.
 - `mm_core/analyze.py` computes latency stats + regime shares and defaults to latest contiguous run.
 - Analyzer legacy parsing bug fixed: old 11-column rows no longer mis-infer `e2e_since_sub_ms`.
 - `mm_core/data_quality_check.py` runs integrity + QA checks and supports strict non-zero exit.
-- New automated tests added under `mm_core/tests/` and passing locally.
+- Static visualization script added: `mm_core/visualize_bbo.py`.
+- Interactive visualization script added: `mm_core/visualize_bbo_interactive.py`.
+- New automated tests added under `mm_core/tests/` and passing locally (9 tests).
+- Latest 1h run (`mm_core/out/kraken_bbo_1h_test.csv`) strict QA PASS and improved latency profile.
 - Not yet built:
 - Fair value baseline script (mid/microprice + 1s directional evaluation).
 - Trades/L2 ingestion (still L1 BBO-only stack).
@@ -39,6 +44,8 @@ Project root: c:\Users\syzdy\python\mm_core
 5) TECH STACK
 - Python 3.14.3
 - `websockets==15.0.1`
+- `matplotlib>=3.8,<4`
+- `plotly>=5,<6`
 - Standard library: `asyncio`, `csv`, `argparse`, `dataclasses`, `pathlib`
 
 6) ARCHITECTURE OVERVIEW
@@ -59,30 +66,35 @@ Project root: c:\Users\syzdy\python\mm_core
 
 8) CLI CONTRACTS
 - Collect:
-- `test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR [--out <csv>] [--max-seconds N] [--summary-every S]`
+- `test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR [--out <csv>] [--max-seconds N] [--summary-every S] [--offset-refresh-seconds R] [--max-abs-clock-offset-ms A] [--max-offset-jump-ms J]`
 - Analyze:
 - `test_venv\Scripts\python.exe mm_core\analyze.py --file <csv> [--normal-max-ms X --degraded-max-ms Y] [--all-runs]`
 - QA:
 - `test_venv\Scripts\python.exe mm_core\data_quality_check.py --file <csv> [--strict] [--all-runs]`
+- Visualize (interactive):
+- `test_venv\Scripts\python.exe mm_core\visualize_bbo_interactive.py --file <csv> --date YYYY-MM-DD`
 
 9) IMPORTANT PATHS
 - `mm_core/collector.py`
 - `mm_core/analyze.py`
 - `mm_core/data_quality_check.py`
+- `mm_core/visualize_bbo.py`
+- `mm_core/visualize_bbo_interactive.py`
 - `mm_core/tests/test_analyze.py`
 - `mm_core/tests/test_collector.py`
 - `mm_core/tests/test_data_quality_check.py`
 - `mm_core/PLAN_KRAKEN_BTC_EUR.md`
+- `mm_core/PLAN_HISTORICAL_DATA_BACKTEST.md`
 - `mm_core/README.md`
 - Legacy duplicate (non-canonical): `c:\Users\syzdy\python\kraken_latency`
 
 10) TESTING STATUS
 - Static compile check:
-- `test_venv\Scripts\python.exe -m py_compile mm_core\collector.py mm_core\analyze.py mm_core\data_quality_check.py`
+- `test_venv\Scripts\python.exe -m py_compile mm_core\collector.py mm_core\analyze.py mm_core\data_quality_check.py mm_core\visualize_bbo.py mm_core\visualize_bbo_interactive.py`
 - Unit tests:
 - `test_venv\Scripts\python.exe -m unittest discover -s mm_core\tests -p "test_*.py" -v`
 - Current local result:
-- 6 tests passed on 2026-02-25.
+- 9 tests passed on 2026-03-01.
 - Coverage gaps:
 - No integration test harness with replayed websocket fixtures.
 - No long-run deterministic test for clock-offset drift behavior.
@@ -92,7 +104,8 @@ Project root: c:\Users\syzdy\python\mm_core
 - analyzer showed p50 about 1306 ms and unsafe share about 98.64%.
 - strict QA failed with backward timestamp share about 5.90% and max backward jump about 19606 ms.
 - This indicates either venue timestamp instability in that run, or offset/data path issues.
-- Reconnect hardening is in place, but periodic offset refresh / drift guard is still not implemented.
+- Step 1 controls are implemented but still need validation on fresh contiguous long run (24h+).
+- Current 1h example file had `runs_detected=4` due to file reuse; policy is now unique file per run.
 - Repo currently tracks `mm_core/__pycache__/*.pyc`, which creates noisy diffs.
 
 12) DO-NOT-CHANGE LIST
@@ -102,44 +115,48 @@ Project root: c:\Users\syzdy\python\mm_core
 - Keep 24h gate thresholds/process in `PLAN_KRAKEN_BTC_EUR.md` unless intentionally revised.
 
 13) NEXT 3 TASKS (ORDERED)
-- 1. Implement periodic clock-offset refresh / drift guard in collector.
+- 1. Validate Step 1 on fresh single-run captures (1h then 24h) with unique filenames.
 - Acceptance:
-- offset is recomputed at controlled intervals or on reconnect and metrics are monitored for drift.
-- 2. Add fair baseline script on BBO data (`mid`, `microprice`, 1s directional evaluation).
+- `runs_detected=1`, strict QA PASS, and latency metrics stable under configured offset guard.
+- 2. Build historical store batch script for partitioned Parquet + manifest.
 - Acceptance:
-- reproducible script output with baseline comparison from CSV input.
-- 3. Re-run clean 24h collection and gate using strict QA + analyzer fixed thresholds (20/80).
+- deterministic rebuild from raw files and query-ready daily partitions.
+- 3. Add fair baseline script on BBO data (`mid`, `microprice`, 1s directional evaluation).
 - Acceptance:
-- >=23.5h runtime, strict QA pass, and latency stats within plan thresholds.
+- reproducible baseline signal report and comparison vs naive mid.
 
 14) QUICK RUNBOOK
 - Install deps:
 - `test_venv\Scripts\python.exe -m pip install -r mm_core\requirements.txt`
-- 15m smoke capture:
-- `test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR --out mm_core\out\sanity_fresh.csv --max-seconds 900`
+- 1h run with unique file and step-1 controls:
+- `test_venv\Scripts\python.exe mm_core\collector.py --symbol BTC/EUR --out mm_core\out\kraken_bbo_run_YYYYMMDD_HHMMSS.csv --max-seconds 3600 --summary-every 5 --offset-refresh-seconds 900 --max-abs-clock-offset-ms 2000 --max-offset-jump-ms 500`
 - Analyze:
-- `test_venv\Scripts\python.exe mm_core\analyze.py --file mm_core\out\sanity_fresh.csv --normal-max-ms 20 --degraded-max-ms 80`
+- `test_venv\Scripts\python.exe mm_core\analyze.py --file mm_core\out\kraken_bbo_run_YYYYMMDD_HHMMSS.csv --normal-max-ms 20 --degraded-max-ms 80`
 - Strict QA:
-- `test_venv\Scripts\python.exe mm_core\data_quality_check.py --file mm_core\out\sanity_fresh.csv --strict`
+- `test_venv\Scripts\python.exe mm_core\data_quality_check.py --file mm_core\out\kraken_bbo_run_YYYYMMDD_HHMMSS.csv --strict`
+- Interactive chart:
+- `test_venv\Scripts\python.exe mm_core\visualize_bbo_interactive.py --file mm_core\out\kraken_bbo_run_YYYYMMDD_HHMMSS.csv --date YYYY-MM-DD`
 
 === NEXT CHAT BOOTSTRAP PROMPT ===
 Continue the `mm_core` project at `c:\Users\syzdy\python\mm_core`.
 
 Current status:
 - Collector/analyzer/QA scripts are functional.
-- Collector includes reconnect/backoff.
+- Collector includes reconnect/backoff and periodic offset refresh guardrails.
 - Analyzer legacy parsing bug is fixed.
-- Unit tests exist in `mm_core/tests` and pass (6 tests).
-- Main unresolved risk is long-run latency quality and potential clock-offset drift.
+- Unit tests exist in `mm_core/tests` and pass (9 tests).
+- Visualization scripts exist (static + interactive).
+- Main unresolved risk is long-run contiguous run quality validation.
 
 Immediate priorities:
-1) Implement periodic offset refresh/drift guard in `collector.py`.
-2) Add a small fair baseline script (mid + microprice + 1s directional check).
-3) Update README with baseline command.
-4) Re-run clean 24h capture and apply strict QA gate.
+1) Run fresh unique-file 1h + 24h captures to validate Step 1.
+2) Build partitioned historical store + manifest pipeline.
+3) Add fair baseline script (mid + microprice + 1s directional check).
+4) Update README with baseline and visualization commands.
 
 Constraints:
 - Keep `mm_core/` as canonical root.
 - Do not modify legacy `kraken_latency/` unless explicitly requested.
+- Use new file per run (do not append to prior run files for QA/backtest inputs).
 - Do not change CSV schema without explicit versioning.
 === END ===

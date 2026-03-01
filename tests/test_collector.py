@@ -37,6 +37,36 @@ class CollectorTests(unittest.TestCase):
         msg = {"channel": "trade", "type": "snapshot", "data": [{}]}
         self.assertIsNone(self.collector.parse_ticker_event(msg))
 
+    def test_validate_clock_offset_rejects_abs_outlier(self) -> None:
+        accepted, reason = self.collector.validate_clock_offset(
+            candidate_offset_ms=5000.0,
+            last_good_offset_ms=None,
+            max_abs_clock_offset_ms=2000.0,
+            max_offset_jump_ms=500.0,
+        )
+        self.assertIsNone(accepted)
+        self.assertEqual(reason, "rejected_abs")
+
+    def test_validate_clock_offset_rejects_jump_outlier(self) -> None:
+        accepted, reason = self.collector.validate_clock_offset(
+            candidate_offset_ms=1200.0,
+            last_good_offset_ms=100.0,
+            max_abs_clock_offset_ms=2000.0,
+            max_offset_jump_ms=500.0,
+        )
+        self.assertIsNone(accepted)
+        self.assertEqual(reason, "rejected_jump")
+
+    def test_validate_clock_offset_accepts_valid(self) -> None:
+        accepted, reason = self.collector.validate_clock_offset(
+            candidate_offset_ms=120.0,
+            last_good_offset_ms=100.0,
+            max_abs_clock_offset_ms=2000.0,
+            max_offset_jump_ms=500.0,
+        )
+        self.assertEqual(accepted, 120.0)
+        self.assertEqual(reason, "accepted")
+
 
 if __name__ == "__main__":
     unittest.main()
